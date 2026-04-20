@@ -105,6 +105,33 @@ Copy-Item data\safezone-overlay.png `
     "C:\Program Files\obs-studio\data\obs-plugins\makuguren-obs-safezone-overlay\" -Force
 ```
 
+### Package a release ZIP
+
+To produce a redistributable ZIP (`obs-safezone-overlay-<version>-windows-x64.zip`) containing the plugin DLL, PDB, `data/` folder, `README.md`, and `LICENSE`, run the following from the repo root in PowerShell:
+
+```powershell
+cmake --build --preset windows-x64 --config RelWithDebInfo --parallel
+if (Test-Path release) { Remove-Item -Recurse -Force release }
+cmake --install build_x64 --prefix "$PWD\release\RelWithDebInfo" --config RelWithDebInfo
+Copy-Item README.md, LICENSE -Destination release\RelWithDebInfo\obs-safezone-overlay -Force
+Compress-Archive -Path "$PWD\release\RelWithDebInfo\*" `
+    -DestinationPath "$PWD\release\obs-safezone-overlay-1.0.0-windows-x64.zip" `
+    -CompressionLevel Optimal -Force
+```
+
+This produces the following layout inside the ZIP, ready to drop into an OBS install:
+
+```text
+obs-safezone-overlay/
+  bin/64bit/obs-safezone-overlay.dll
+  bin/64bit/obs-safezone-overlay.pdb
+  data/safezone-overlay.png
+  README.md
+  LICENSE
+```
+
+The finished archive lands at `release\obs-safezone-overlay-1.0.0-windows-x64.zip`.
+
 ## Project layout
 
 ```text
