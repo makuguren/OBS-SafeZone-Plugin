@@ -48,7 +48,7 @@ Section "SafeZone Overlay Plugin" SecMain
 
     ; Plugin data -> data\obs-plugins\obs-safezone-overlay
     SetOutPath "${OBS_DATA_DIR}"
-    File /r "$%RELEASE_DIR%\..\data\obs-safezone-overlay\*.*"
+    File /r /nonfatal "$%RELEASE_DIR%\..\data\*.*"
 
     ; Write uninstaller
     WriteUninstaller "$INSTDIR\uninstall-safezone-overlay.exe"
