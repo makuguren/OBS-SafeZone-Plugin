@@ -290,6 +290,34 @@ jobs:
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
 
+      - name: Build Windows Installer 🪟
+        if: fromJSON(needs.check-event.outputs.package)
+        shell: pwsh
+        run: |
+          # Build Windows Installer 🪟
+          $BuildSpec     = Get-Content -Path buildspec.json -Raw | ConvertFrom-Json
+          $PluginName    = $BuildSpec.name
+          $PluginVersion = $BuildSpec.version
+          $Config        = '${{ needs.check-event.outputs.config }}'
+
+          $ReleaseDir    = "${{ github.workspace }}/release/${Config}/${PluginName}"
+          $OutputPath    = "${{ github.workspace }}/release"
+          $ProjectRoot   = "${{ github.workspace }}"
+
+          # Install NSIS via Chocolatey (pre-installed on windows-2022 runners)
+          choco install nsis --no-progress -y | Out-Null
+
+          $env:PLUGIN_NAME   = $PluginName
+          $env:PLUGIN_VERSION = $PluginVersion
+          $env:RELEASE_DIR   = "${ReleaseDir}/bin/64bit"
+          $env:OUTPUT_PATH   = $OutputPath
+          $env:PROJECT_ROOT  = $ProjectRoot
+
+          Write-Host "::group::Compiling NSIS installer"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /V3 `
+              "${{ github.workspace }}/installer/windows-installer.nsi"
+          Write-Host "::endgroup::"
+
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
         with:
