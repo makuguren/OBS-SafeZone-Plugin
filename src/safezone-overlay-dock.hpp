@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 class QPushButton;
+class QToolButton;
 class QTimer;
 
 class SafeZoneOverlayDock : public QWidget {
@@ -34,6 +35,8 @@ public:
 
 private slots:
 	void onToggle(bool checked);
+	void onSettingsClicked();
+
 	// Invoked once OBS has finished loading. The preview's
 	// obs_display_t is created lazily from Qt events (visibleChanged /
 	// paintEvent / resizeEvent) and may not exist yet at this point, so
@@ -47,6 +50,8 @@ private:
 	void setButtonEnabledText(bool enabled);
 
 	QPushButton *m_toggleButton = nullptr;
+	QToolButton *m_settingsButton = nullptr;
+
 	// Poll timer used to retry enabling the overlay on startup while the
 	// preview display is still being constructed by Qt.
 	QTimer *m_restoreTimer = nullptr;

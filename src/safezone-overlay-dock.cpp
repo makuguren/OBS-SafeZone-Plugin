@@ -18,25 +18,29 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "safezone-overlay-dock.hpp"
 #include "safezone-overlay.hpp"
+#include "safezone-properties-dialog.hpp"
 
 #include <obs-frontend-api.h>
 #include <util/config-file.h>
 
 #include <plugin-support.h>
 
+#include <QHBoxLayout>
 #include <QMetaObject>
 #include <QPushButton>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
 
 // OBS stores per-user settings in the global user config (the same file
-// that holds dock layout, confirm-on-exit, etc.). We keep our "was the
-// overlay enabled at last shutdown?" flag under a dedicated section so
-// we don't collide with anything OBS owns.
+// that holds dock layout, confirm-on-exit, etc.). We keep our plugin state
+// under a dedicated section so we don't collide with anything OBS owns.
 constexpr const char *kConfigSection = "SafeZoneOverlay";
 constexpr const char *kConfigEnabledKey = "Enabled";
+constexpr const char *kConfigImageFileKey = "ImageFile";
+constexpr const char *kConfigOpacityKey = "Opacity";
 
 // The preview's obs_display_t is created lazily (see
 // OBSQTDisplay::CreateDisplay, triggered from visibleChanged / paintEvent /
@@ -45,6 +49,10 @@ constexpr const char *kConfigEnabledKey = "Enabled";
 // up to ~10 s before giving up on auto-restore.
 constexpr int kRestorePollIntervalMs = 100;
 constexpr int kRestoreMaxAttempts = 100;
+
+// ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
 
 bool loadSavedEnabled()
 {
@@ -65,22 +73,56 @@ void saveEnabled(bool enabled)
 	config_save_safe(cfg, "tmp", nullptr);
 }
 
+std::string loadSavedImageFile()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return "safezone-overlay.png";
+	const char *val = config_get_string(cfg, kConfigSection,
+					    kConfigImageFileKey);
+	// If never written the returned value is nullptr or empty; fall back
+	// to the default bundled overlay image.
+	if (!val || val[0] == '\0')
+		return "safezone-overlay.png";
+	return std::string(val);
+}
+
+float loadSavedOpacity()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return 1.0f;
+	const double val =
+		config_get_double(cfg, kConfigSection, kConfigOpacityKey);
+	// If never written the returned value is 0.0 (default); treat that as
+	// "unset" and default to fully opaque.
+	if (val < 0.001)
+		return 1.0f;
+	return float(val);
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
 
 SafeZoneOverlayDock::SafeZoneOverlayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("SafeZoneOverlayDock");
 
 	// The dock is built inside obs_module_post_load(), which runs before
-	// the preview's obs_display_t exists. We can't actually call
-	// SafeZoneOverlay::enable() yet - that has to wait until after
-	// OBS_FRONTEND_EVENT_FINISHED_LOADING AND until Qt has had a chance
-	// to expose/paint the preview (which is what triggers
-	// OBSQTDisplay::CreateDisplay). For now we only reflect the saved
-	// state in the button and defer the real enable() until
+	// the preview's obs_display_t exists. We only reflect the saved state
+	// in the controls and defer the real enable() until
 	// tryRestoreOverlay() succeeds.
 	const bool savedEnabled = loadSavedEnabled();
 
+	// Apply saved image file and opacity to the overlay engine now so they
+	// are ready when the overlay is enabled later.
+	SafeZoneOverlay::setImageFile(loadSavedImageFile());
+	SafeZoneOverlay::setOpacity(loadSavedOpacity());
+
+	// ---- Toggle button ----
 	m_toggleButton = new QPushButton(this);
 	m_toggleButton->setCheckable(true);
 	m_toggleButton->setChecked(savedEnabled);
@@ -90,14 +132,32 @@ SafeZoneOverlayDock::SafeZoneOverlayDock(QWidget *parent) : QWidget(parent)
 		"The overlay is rendered only on the preview and never "
 		"appears in recordings, streams, or projectors."));
 
+	// ---- Settings button ----
+	m_settingsButton = new QToolButton(this);
+	m_settingsButton->setText(QStringLiteral("⚙"));
+	m_settingsButton->setToolTip(
+		QStringLiteral("Open SafeZone Overlay properties "
+			       "(safe zone preset, opacity, etc.)"));
+	m_settingsButton->setFixedSize(26, 26);
+
+	// ---- Bottom row: toggle + settings ----
+	auto *bottomRow = new QHBoxLayout();
+	bottomRow->setSpacing(4);
+	bottomRow->addWidget(m_toggleButton, 1);
+	bottomRow->addWidget(m_settingsButton);
+
+	// ---- Main layout ----
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
 	layout->setSpacing(8);
-	layout->addWidget(m_toggleButton);
+	layout->addLayout(bottomRow);
 	layout->addStretch(1);
 
+	// ---- Signal connections ----
 	connect(m_toggleButton, &QPushButton::toggled, this,
 		&SafeZoneOverlayDock::onToggle);
+	connect(m_settingsButton, &QToolButton::clicked, this,
+		&SafeZoneOverlayDock::onSettingsClicked);
 
 	// Polling timer used to retry auto-enabling on startup while the
 	// preview's obs_display_t is still being constructed. Kicked off by
@@ -111,12 +171,20 @@ SafeZoneOverlayDock::SafeZoneOverlayDock(QWidget *parent) : QWidget(parent)
 		&SafeZoneOverlayDock::frontendEventCb, this);
 }
 
+// ---------------------------------------------------------------------------
+// Destructor
+// ---------------------------------------------------------------------------
+
 SafeZoneOverlayDock::~SafeZoneOverlayDock()
 {
 	obs_frontend_remove_event_callback(
 		&SafeZoneOverlayDock::frontendEventCb, this);
 	SafeZoneOverlay::disable();
 }
+
+// ---------------------------------------------------------------------------
+// Frontend event callback
+// ---------------------------------------------------------------------------
 
 void SafeZoneOverlayDock::frontendEventCb(enum obs_frontend_event event,
 					  void *data)
@@ -130,6 +198,10 @@ void SafeZoneOverlayDock::frontendEventCb(enum obs_frontend_event event,
 	QMetaObject::invokeMethod(self, "tryRestoreOverlay",
 				  Qt::QueuedConnection);
 }
+
+// ---------------------------------------------------------------------------
+// Auto-restore on startup
+// ---------------------------------------------------------------------------
 
 void SafeZoneOverlayDock::tryRestoreOverlay()
 {
@@ -176,12 +248,20 @@ void SafeZoneOverlayDock::tryRestoreOverlay()
 		m_restoreTimer->start();
 }
 
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+
 void SafeZoneOverlayDock::setButtonEnabledText(bool enabled)
 {
 	m_toggleButton->setText(
 		enabled ? QStringLiteral("Disable SafeZone Overlay")
 			: QStringLiteral("Enable SafeZone Overlay"));
 }
+
+// ---------------------------------------------------------------------------
+// Slots
+// ---------------------------------------------------------------------------
 
 void SafeZoneOverlayDock::onToggle(bool checked)
 {
@@ -201,4 +281,14 @@ void SafeZoneOverlayDock::onToggle(bool checked)
 		setButtonEnabledText(false);
 		saveEnabled(false);
 	}
+}
+
+void SafeZoneOverlayDock::onSettingsClicked()
+{
+	// Find the top-level window to use as dialog parent so it stays
+	// within the OBS main window frame.
+	QWidget *topLevel = window();
+	SafeZonePropertiesDialog dlg(topLevel ? topLevel : this);
+	dlg.exec();
+	// Preset and opacity are persisted inside the dialog on Accept.
 }

@@ -23,6 +23,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPointer>
 #include <QWidget>
 
+#include <string>
+#include <vector>
+
 struct gs_texture;
 struct gs_image_file4;
 typedef struct gs_texture gs_texture_t;
@@ -57,6 +60,28 @@ public:
 	// True when the overlay is currently active.
 	static bool isEnabled();
 
+	// ---------------------------------------------------------------------------
+	// Active image file selection.
+	// filename is the bare filename (e.g. "safezone-overlay.png") that will be
+	// resolved through obs_module_file(). Changing this while the overlay is
+	// active reloads the texture immediately.
+	// ---------------------------------------------------------------------------
+	static void setImageFile(const std::string &filename);
+	static const std::string &imageFile();
+
+	// ---------------------------------------------------------------------------
+	// Enumerate PNG files available in the plugin's data/ directory.
+	// Returns a list of bare filenames (e.g. {"action-safe.png", "ebu-r95.png"}).
+	// ---------------------------------------------------------------------------
+	static std::vector<std::string> availableImageFiles();
+
+	// ---------------------------------------------------------------------------
+	// Opacity (0.0 = invisible, 1.0 = fully opaque).
+	// Applied as an alpha multiplier in the draw callback.
+	// ---------------------------------------------------------------------------
+	static void setOpacity(float opacity);
+	static float opacity();
+
 private:
 	SafeZoneOverlay();
 	~SafeZoneOverlay();
@@ -88,4 +113,9 @@ private:
 	uint32_t m_textureHeight = 0;
 
 	static SafeZoneOverlay *s_instance;
+
+	// Global image-file / opacity state — persisted across enable/disable
+	// cycles so that toggling the overlay on/off keeps the last chosen settings.
+	static std::string s_imageFile; // bare filename, e.g. "safezone-overlay.png"
+	static float s_opacity;
 };

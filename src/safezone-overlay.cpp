@@ -27,8 +27,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <graphics/vec2.h>
 #include <plugin-support.h>
 
+#include <QDir>
+#include <QFileInfo>
 #include <QMainWindow>
+#include <QString>
 #include <QWidget>
+
+#include <algorithm>
 
 /* --------------------------------------------------------------------------
  * Layout-compatible shims for OBS Studio's OBSQTDisplay / OBSBasicPreview.
@@ -134,7 +139,17 @@ inline void GetCenterPosFromFixedScale(int baseCX, int baseCY, int windowCX,
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Static member definitions
+// ---------------------------------------------------------------------------
+
 SafeZoneOverlay *SafeZoneOverlay::s_instance = nullptr;
+std::string SafeZoneOverlay::s_imageFile = "safezone-overlay.png";
+float SafeZoneOverlay::s_opacity = 1.0f;
+
+// ---------------------------------------------------------------------------
+// enable / disable / isEnabled
+// ---------------------------------------------------------------------------
 
 bool SafeZoneOverlay::enable()
 {
@@ -230,6 +245,83 @@ bool SafeZoneOverlay::isEnabled()
 	return s_instance != nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// Image file selection
+// ---------------------------------------------------------------------------
+
+void SafeZoneOverlay::setImageFile(const std::string &filename)
+{
+	if (s_imageFile == filename)
+		return;
+
+	s_imageFile = filename;
+
+	// If the overlay is live, reload the texture immediately.
+	if (s_instance) {
+		s_instance->freeTexture();
+		if (!s_instance->loadTexture()) {
+			obs_log(LOG_WARNING,
+				"SafeZone Overlay: texture reload failed for "
+				"'%s'; overlay disabled",
+				filename.c_str());
+			// freeTexture already cleared the pointer; the draw
+			// callback will no-op on the null check.
+		}
+	}
+}
+
+const std::string &SafeZoneOverlay::imageFile()
+{
+	return s_imageFile;
+}
+
+// ---------------------------------------------------------------------------
+// Enumerate available PNG files in the plugin data/ directory.
+// ---------------------------------------------------------------------------
+
+std::vector<std::string> SafeZoneOverlay::availableImageFiles()
+{
+	std::vector<std::string> result;
+
+	// Resolve the data directory via obs_module_file(""). The returned
+	// path ends with a separator and points to the plugin's data/ folder.
+	char *dataDir = obs_module_file("");
+	if (!dataDir)
+		return result;
+
+	QDir dir(QString::fromUtf8(dataDir));
+	bfree(dataDir);
+
+	// List every *.png in the data directory (case-insensitive on Windows).
+	const QStringList entries =
+		dir.entryList(QStringList() << "*.png", QDir::Files,
+			      QDir::Name | QDir::IgnoreCase);
+
+	result.reserve(static_cast<size_t>(entries.size()));
+	for (const QString &entry : entries)
+		result.push_back(entry.toStdString());
+
+	return result;
+}
+
+// ---------------------------------------------------------------------------
+// Opacity
+// ---------------------------------------------------------------------------
+
+void SafeZoneOverlay::setOpacity(float opacity)
+{
+	s_opacity = std::max(0.0f, std::min(1.0f, opacity));
+}
+
+float SafeZoneOverlay::opacity()
+{
+	return s_opacity;
+}
+
+// ---------------------------------------------------------------------------
+// Constructor / destructor
+// ---------------------------------------------------------------------------
+
 SafeZoneOverlay::SafeZoneOverlay() = default;
 
 SafeZoneOverlay::~SafeZoneOverlay()
@@ -237,26 +329,19 @@ SafeZoneOverlay::~SafeZoneOverlay()
 	freeTexture();
 }
 
+// ---------------------------------------------------------------------------
+// loadTexture / freeTexture
+// ---------------------------------------------------------------------------
+
 bool SafeZoneOverlay::loadTexture()
 {
-	const char *candidates[] = {
-		"safezone-overlay.png",
-		"safezone-overlay.jpg",
-		"safezone-overlay.jpeg",
-		"safezone-overlay.bmp",
-	};
-
-	char *resolved = nullptr;
-	for (const char *name : candidates) {
-		resolved = obs_module_file(name);
-		if (resolved)
-			break;
-	}
-
+	// Resolve the chosen image file through the OBS module path so it
+	// works regardless of installation location.
+	char *resolved = obs_module_file(s_imageFile.c_str());
 	if (!resolved) {
 		obs_log(LOG_WARNING,
-			"SafeZone Overlay: no overlay image found in data/ "
-			"(expected safezone-overlay.png)");
+			"SafeZone Overlay: image file '%s' not found in data/",
+			s_imageFile.c_str());
 		return false;
 	}
 
@@ -268,7 +353,8 @@ bool SafeZoneOverlay::loadTexture()
 
 	if (!image->image3.image2.image.loaded) {
 		obs_log(LOG_WARNING,
-			"SafeZone Overlay: failed to decode overlay image");
+			"SafeZone Overlay: failed to decode image '%s'",
+			s_imageFile.c_str());
 		gs_image_file4_free(image);
 		bfree(image);
 		return false;
@@ -280,7 +366,8 @@ bool SafeZoneOverlay::loadTexture()
 
 	if (!image->image3.image2.image.texture) {
 		obs_log(LOG_WARNING,
-			"SafeZone Overlay: failed to upload overlay texture");
+			"SafeZone Overlay: failed to upload texture for '%s'",
+			s_imageFile.c_str());
 		obs_enter_graphics();
 		gs_image_file4_free(image);
 		obs_leave_graphics();
@@ -294,8 +381,8 @@ bool SafeZoneOverlay::loadTexture()
 	m_textureHeight = image->image3.image2.image.cy;
 
 	obs_log(LOG_INFO,
-		"SafeZone Overlay: loaded texture (%ux%u)",
-		m_textureWidth, m_textureHeight);
+		"SafeZone Overlay: loaded '%s' (%ux%u)",
+		s_imageFile.c_str(), m_textureWidth, m_textureHeight);
 	return true;
 }
 
@@ -318,6 +405,10 @@ void SafeZoneOverlay::freeTexture()
 	m_textureHeight = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Draw callback
+// ---------------------------------------------------------------------------
+
 void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 {
 	auto *self = static_cast<SafeZoneOverlay *>(data);
@@ -329,6 +420,10 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	if (!obs_get_video_info(&ovi))
 		return;
 	if (ovi.base_width == 0 || ovi.base_height == 0)
+		return;
+
+	// Skip drawing when opacity is effectively zero.
+	if (s_opacity < 0.001f)
 		return;
 
 	// Read the live preview state directly from OBSBasicPreview's memory.
@@ -399,13 +494,30 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
 
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_eparam_t *image =
+
+	// Apply opacity via the effect's "color" multiplier.
+	gs_eparam_t *colorParam =
+		gs_effect_get_param_by_name(effect, "color");
+	if (colorParam && s_opacity < 1.0f) {
+		struct vec4 col;
+		vec4_set(&col, 1.0f, 1.0f, 1.0f, s_opacity);
+		gs_effect_set_vec4(colorParam, &col);
+	}
+
+	gs_eparam_t *imageParam =
 		gs_effect_get_param_by_name(effect, "image");
-	gs_effect_set_texture(image, self->m_texture);
+	gs_effect_set_texture(imageParam, self->m_texture);
 
 	while (gs_effect_loop(effect, "Draw")) {
 		gs_draw_sprite(self->m_texture, 0, ovi.base_width,
 			       ovi.base_height);
+	}
+
+	// Reset color param back to opaque white so we don't affect other draws.
+	if (colorParam && s_opacity < 1.0f) {
+		struct vec4 col;
+		vec4_set(&col, 1.0f, 1.0f, 1.0f, 1.0f);
+		gs_effect_set_vec4(colorParam, &col);
 	}
 
 	gs_blend_state_pop();

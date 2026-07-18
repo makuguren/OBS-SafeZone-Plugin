@@ -42,6 +42,8 @@ target_sources(
     src/safezone-overlay-dock.hpp
     src/safezone-overlay.cpp
     src/safezone-overlay.hpp
+    src/safezone-properties-dialog.cpp
+    src/safezone-properties-dialog.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
