@@ -22,8 +22,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <string>
 
+class QCheckBox;
 class QComboBox;
-class QSlider;
+class QGroupBox;
 class QLabel;
 class QSpinBox;
 
@@ -32,10 +33,11 @@ class QSpinBox;
  *
  * Exposes:
  *   - Safe Zone image selector — auto-populated from *.png files in data/
- *   - Opacity slider (0–100 %)
+ *   - Custom Safe Zone checkbox + four margin spinboxes (Top/Bottom/Left/Right)
  *
- * Changes are applied live so the user can preview them. OK persists to OBS
- * user config; Cancel restores the original values.
+ * When the "Custom Safe Zone" checkbox is checked the image dropdown is
+ * disabled and the margin controls become active, and vice-versa.
+ * Changes are applied live; OK persists, Cancel restores.
  */
 class SafeZonePropertiesDialog : public QDialog {
 	Q_OBJECT
@@ -45,17 +47,31 @@ public:
 
 private slots:
 	void onImageChanged(int index);
-	void onOpacitySliderChanged(int value);
-	void onOpacitySpinChanged(int value);
+	void onCustomToggled(bool checked);
+	void onMarginsChanged();
 	void onAccepted();
 	void onRejected();
 
 private:
+	// Image mode controls
 	QComboBox *m_imageCombo = nullptr;
-	QSlider *m_opacitySlider = nullptr;
-	QSpinBox *m_opacitySpin = nullptr;
+
+	// Custom mode controls
+	QCheckBox *m_customCheck = nullptr;
+	QGroupBox *m_customGroup = nullptr;
+	QSpinBox *m_marginTop = nullptr;
+	QSpinBox *m_marginBottom = nullptr;
+	QSpinBox *m_marginLeft = nullptr;
+	QSpinBox *m_marginRight = nullptr;
+
 
 	// Snapshots at dialog open so we can restore on Cancel.
 	std::string m_originalImageFile;
-	float m_originalOpacity = 1.0f;
+	bool m_originalCustomEnabled = false;
+	int m_originalMarginTop = 10;
+	int m_originalMarginBottom = 10;
+	int m_originalMarginLeft = 10;
+	int m_originalMarginRight = 10;
+
+	void updateCustomGroupEnabled(bool customActive);
 };

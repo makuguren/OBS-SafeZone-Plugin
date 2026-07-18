@@ -45,42 +45,55 @@ typedef struct gs_texture gs_texture_t;
  * Because the drawing happens on the preview display only (not on any
  * source or on the main program output), it never appears in recordings,
  * streams, projectors, or virtual camera, and it never touches Studio Mode.
+ *
+ * Two mutually-exclusive modes:
+ *   - Image mode  : displays a user-supplied PNG from the data/ folder.
+ *   - Custom mode : draws a programmatic outline rectangle whose margins
+ *                   (top / bottom / left / right, expressed as integer
+ *                   percentages 0–50) are set by the user.
  */
 class SafeZoneOverlay {
 public:
-	// Enable the overlay: load the image, find the main preview display,
-	// and register the draw callback. Returns true on success. Safe to
-	// call when already enabled.
+	// Enable the overlay: load/generate the texture, find the main preview
+	// display, and register the draw callback. Returns true on success.
+	// Safe to call when already enabled.
 	static bool enable();
 
-	// Disable the overlay: unregister the callback and release the
-	// texture. Safe to call when already disabled.
+	// Disable the overlay: unregister the callback and release the texture.
+	// Safe to call when already disabled.
 	static void disable();
 
 	// True when the overlay is currently active.
 	static bool isEnabled();
 
 	// ---------------------------------------------------------------------------
-	// Active image file selection.
-	// filename is the bare filename (e.g. "safezone-overlay.png") that will be
-	// resolved through obs_module_file(). Changing this while the overlay is
-	// active reloads the texture immediately.
+	// Image file mode — selects a PNG from the plugin's data/ folder.
+	// Ignored when custom mode is active.
 	// ---------------------------------------------------------------------------
 	static void setImageFile(const std::string &filename);
 	static const std::string &imageFile();
 
-	// ---------------------------------------------------------------------------
-	// Enumerate PNG files available in the plugin's data/ directory.
-	// Returns a list of bare filenames (e.g. {"action-safe.png", "ebu-r95.png"}).
-	// ---------------------------------------------------------------------------
+	// Enumerate PNG files available in the plugin data/ directory.
+	// Returns bare filenames, e.g. {"action-safe.png", "safezone-overlay.png"}.
 	static std::vector<std::string> availableImageFiles();
 
 	// ---------------------------------------------------------------------------
-	// Opacity (0.0 = invisible, 1.0 = fully opaque).
-	// Applied as an alpha multiplier in the draw callback.
+	// Custom safe-zone mode — draws a configurable outline rectangle.
+	// Margins are integer percentages of the canvas dimension (0–50).
+	// When enabled, the image dropdown is ignored.
 	// ---------------------------------------------------------------------------
-	static void setOpacity(float opacity);
-	static float opacity();
+	static void setCustomEnabled(bool enabled);
+	static bool isCustomEnabled();
+
+	// Sets one or more margins; each value is clamped to [0, 50].
+	// If the overlay is active the texture is regenerated immediately.
+	static void setCustomMargins(int top, int bottom, int left, int right);
+	static int customMarginTop();
+	static int customMarginBottom();
+	static int customMarginLeft();
+	static int customMarginRight();
+
+
 
 private:
 	SafeZoneOverlay();
@@ -89,8 +102,14 @@ private:
 	SafeZoneOverlay(const SafeZoneOverlay &) = delete;
 	SafeZoneOverlay &operator=(const SafeZoneOverlay &) = delete;
 
+	// Loads (image mode) or generates (custom mode) the GPU texture.
 	bool loadTexture();
 	void freeTexture();
+
+	// Generates a transparent RGBA pixel buffer with an outline rectangle
+	// at the configured margins. Caller must bfree() the result.
+	static uint8_t *generateCustomPixels(uint32_t w, uint32_t h, int top,
+					     int bottom, int left, int right);
 
 	static void drawCallback(void *data, uint32_t cx, uint32_t cy);
 
@@ -98,24 +117,27 @@ private:
 	// before we get a chance to disable, our pointer auto-nulls and we
 	// can safely skip touching the now-freed OBSBasicPreview shim.
 	QPointer<QWidget> m_previewWidget;
-	// Cached for identity comparison only - NEVER dereference this
-	// directly at teardown. OBS destroys the preview's obs_display_t in
-	// OBSBasic::closeEvent via ui->preview->DestroyDisplay() (which
-	// sets OBSBasicPreview::display = nullptr and frees the struct)
-	// BEFORE OBS_FRONTEND_EVENT_EXIT is dispatched, so by the time any
-	// teardown path runs this cached pointer is already dangling.
-	// disable() re-reads the live value from preview->display and only
-	// calls obs_display_remove_draw_callback if it still matches.
+	// Cached for identity comparison only — never dereference at teardown.
 	obs_display_t *m_previewDisplay = nullptr;
-	void *m_imageFile = nullptr; // gs_image_file4_t, opaque to avoid extra include
+
+	// m_imageFile is non-null when the texture came from gs_image_file4
+	// (image mode). m_textureIsGenerated is true when the texture was
+	// created directly with gs_texture_create (custom mode).
+	void *m_imageFile = nullptr;
 	gs_texture_t *m_texture = nullptr;
 	uint32_t m_textureWidth = 0;
 	uint32_t m_textureHeight = 0;
+	bool m_textureIsGenerated = false;
 
 	static SafeZoneOverlay *s_instance;
 
-	// Global image-file / opacity state — persisted across enable/disable
-	// cycles so that toggling the overlay on/off keeps the last chosen settings.
-	static std::string s_imageFile; // bare filename, e.g. "safezone-overlay.png"
-	static float s_opacity;
+	// --- Global state (persisted across enable/disable cycles) ---
+	static std::string s_imageFile; // bare filename, image mode
+
+	// Custom mode
+	static bool s_customEnabled;
+	static int s_marginTop;    // % of canvas height, [0, 50]
+	static int s_marginBottom; // % of canvas height, [0, 50]
+	static int s_marginLeft;   // % of canvas width,  [0, 50]
+	static int s_marginRight;  // % of canvas width,  [0, 50]
 };

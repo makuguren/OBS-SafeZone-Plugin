@@ -34,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 #include <algorithm>
+#include <cstring>
 
 /* --------------------------------------------------------------------------
  * Layout-compatible shims for OBS Studio's OBSQTDisplay / OBSBasicPreview.
@@ -57,62 +58,57 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace {
 
 struct OBSQTDisplayShim : public QWidget {
-	obs_display_t *display;     // OBSDisplay wraps obs_display_t *
-	bool destroying;            // + 3 bytes padding
+	obs_display_t *display;
+	bool destroying;
 	uint32_t backgroundColor;
 };
 
 struct OBSBasicPreviewShim : public OBSQTDisplayShim {
-	struct obs_sceneitem_crop startCrop;      // 16
-	struct vec2 startItemPos;                  // 8
-	struct vec2 cropSize;                      // 8
-	obs_sceneitem_t *stretchGroup;             // 8 (OBSSceneItem = single ptr)
-	obs_sceneitem_t *stretchItem;              // 8
-	uint32_t stretchHandle;                    // 4 (enum class : uint32_t)
-	float rotateAngle;                         // 4
-	struct vec2 rotatePoint;                   // 8
-	struct vec2 offsetPoint;                   // 8
-	struct vec2 stretchItemSize;               // 8
-	struct matrix4 screenToItem;               // 64 (16-byte aligned)
-	struct matrix4 itemToScreen;               // 64
-	struct matrix4 invGroupTransform;          // 64
-	gs_texture_t *overflow;                    // 8
-	gs_vertbuffer_t *rectFill;                 // 8
-	gs_vertbuffer_t *circleFill;               // 8
-	gs_effect_t *solidEffect;                  // 8
-	gs_effect_t *stripedLineEffect;            // 8
-	struct vec2 startPos;                      // 8
-	struct vec2 mousePos;                      // 8
-	struct vec2 lastMoveOffset;                // 8
-	struct vec2 scrollingFrom;                 // 8
-	struct vec2 scrollingOffset;               // 8  <-- read
-	bool mouseDown;                            // 1
-	bool mouseMoved;                           // 1
-	bool mouseOverItems;                       // 1
-	bool cropping;                             // 1
-	bool locked;                               // 1
-	bool scrollMode;                           // 1
-	bool fixedScaling;                         // 1  <-- read
-	bool selectionBox;                         // 1
-	bool overflowHidden;                       // 1
-	bool overflowSelectionHidden;              // 1
-	bool overflowAlwaysVisible;                // 1 + 1 byte padding
-	int32_t scalingLevel;                      // 4
-	float scalingAmount;                       // 4  <-- read
-	/* members past this point are unused by the overlay */
+	struct obs_sceneitem_crop startCrop;
+	struct vec2 startItemPos;
+	struct vec2 cropSize;
+	obs_sceneitem_t *stretchGroup;
+	obs_sceneitem_t *stretchItem;
+	uint32_t stretchHandle;
+	float rotateAngle;
+	struct vec2 rotatePoint;
+	struct vec2 offsetPoint;
+	struct vec2 stretchItemSize;
+	struct matrix4 screenToItem;
+	struct matrix4 itemToScreen;
+	struct matrix4 invGroupTransform;
+	gs_texture_t *overflow;
+	gs_vertbuffer_t *rectFill;
+	gs_vertbuffer_t *circleFill;
+	gs_effect_t *solidEffect;
+	gs_effect_t *stripedLineEffect;
+	struct vec2 startPos;
+	struct vec2 mousePos;
+	struct vec2 lastMoveOffset;
+	struct vec2 scrollingFrom;
+	struct vec2 scrollingOffset; // <-- read
+	bool mouseDown;
+	bool mouseMoved;
+	bool mouseOverItems;
+	bool cropping;
+	bool locked;
+	bool scrollMode;
+	bool fixedScaling; // <-- read
+	bool selectionBox;
+	bool overflowHidden;
+	bool overflowSelectionHidden;
+	bool overflowAlwaysVisible;
+	int32_t scalingLevel;
+	float scalingAmount; // <-- read
 };
 
-// From OBS Studio's OBSBasic.hpp:
-//     #define PREVIEW_EDGE_SIZE 10
 constexpr int PREVIEW_EDGE_SIZE = 10;
 
-// Equivalent to OBS's GetScaleAndCenterPos (display-helpers.hpp).
 inline void GetScaleAndCenterPos(int baseCX, int baseCY, int windowCX,
 				 int windowCY, int &x, int &y, float &scale)
 {
 	const double windowAspect = double(windowCX) / double(windowCY);
 	const double baseAspect = double(baseCX) / double(baseCY);
-
 	int newCX, newCY;
 	if (windowAspect > baseAspect) {
 		scale = float(windowCY) / float(baseCY);
@@ -123,18 +119,105 @@ inline void GetScaleAndCenterPos(int baseCX, int baseCY, int windowCX,
 		newCX = windowCX;
 		newCY = int(double(windowCX) / baseAspect);
 	}
-
 	x = windowCX / 2 - newCX / 2;
 	y = windowCY / 2 - newCY / 2;
 }
 
-// Equivalent to OBS's GetCenterPosFromFixedScale.
 inline void GetCenterPosFromFixedScale(int baseCX, int baseCY, int windowCX,
-				       int windowCY, int &x, int &y,
-				       float scale)
+				       int windowCY, int &x, int &y, float scale)
 {
 	x = int((float(windowCX) - float(baseCX) * scale) / 2.0f);
 	y = int((float(windowCY) - float(baseCY) * scale) / 2.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Pixel helpers for custom safe-zone generation
+// ---------------------------------------------------------------------------
+
+inline void setPixel(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b,
+		     uint8_t a)
+{
+	dst[0] = r;
+	dst[1] = g;
+	dst[2] = b;
+	dst[3] = a;
+}
+
+static void fillRect(uint8_t *pixels, uint32_t w, uint32_t h, uint32_t x0,
+		     uint32_t y0, uint32_t x1, uint32_t y1, uint8_t r,
+		     uint8_t g, uint8_t b, uint8_t a)
+{
+	for (uint32_t y = y0; y <= y1 && y < h; ++y) {
+		for (uint32_t x = x0; x <= x1 && x < w; ++x) {
+			setPixel(&pixels[(y * w + x) * 4], r, g, b, a);
+		}
+	}
+}
+
+static void drawHLine(uint8_t *pixels, uint32_t w, uint32_t h, uint32_t y,
+		      uint32_t x0, uint32_t x1, uint32_t thickness, uint8_t r,
+		      uint8_t g, uint8_t b, uint8_t a)
+{
+	for (uint32_t t = 0; t < thickness; ++t) {
+		uint32_t row = y + t;
+		if (row >= h) // safety — shouldn't happen
+			break;
+		for (uint32_t x = x0; x <= x1 && x < w; ++x)
+			setPixel(&pixels[(row * w + x) * 4], r, g, b, a);
+	}
+}
+
+static void drawVLine(uint8_t *pixels, uint32_t w, uint32_t h, uint32_t x,
+		      uint32_t y0, uint32_t y1, uint32_t thickness, uint8_t r,
+		      uint8_t g, uint8_t b, uint8_t a)
+{
+	for (uint32_t t = 0; t < thickness; ++t) {
+		uint32_t col = x + t;
+		if (col >= w)
+			break;
+		for (uint32_t y = y0; y <= y1 && y < h; ++y)
+			setPixel(&pixels[(y * w + col) * 4], r, g, b, a);
+	}
+}
+
+static void drawDashedHLine(uint8_t *pixels, uint32_t w, uint32_t y,
+			    uint32_t x0, uint32_t x1, uint8_t r, uint8_t g,
+			    uint8_t b, uint8_t a)
+{
+	constexpr uint32_t dashLen = 12;
+	constexpr uint32_t gapLen = 6;
+	uint32_t pos = x0;
+	bool draw = true;
+	uint32_t count = 0;
+	while (pos <= x1 && pos < w) {
+		if (draw)
+			setPixel(&pixels[(y * w + pos) * 4], r, g, b, a);
+		++pos;
+		if (++count >= (draw ? dashLen : gapLen)) {
+			draw = !draw;
+			count = 0;
+		}
+	}
+}
+
+static void drawDashedVLine(uint8_t *pixels, uint32_t w, uint32_t h,
+			    uint32_t x, uint32_t y0, uint32_t y1, uint8_t r,
+			    uint8_t g, uint8_t b, uint8_t a)
+{
+	constexpr uint32_t dashLen = 12;
+	constexpr uint32_t gapLen = 6;
+	uint32_t pos = y0;
+	bool draw = true;
+	uint32_t count = 0;
+	while (pos <= y1 && pos < h) {
+		if (draw)
+			setPixel(&pixels[(pos * w + x) * 4], r, g, b, a);
+		++pos;
+		if (++count >= (draw ? dashLen : gapLen)) {
+			draw = !draw;
+			count = 0;
+		}
+	}
 }
 
 } // namespace
@@ -145,7 +228,11 @@ inline void GetCenterPosFromFixedScale(int baseCX, int baseCY, int windowCX,
 
 SafeZoneOverlay *SafeZoneOverlay::s_instance = nullptr;
 std::string SafeZoneOverlay::s_imageFile = "safezone-overlay.png";
-float SafeZoneOverlay::s_opacity = 1.0f;
+bool SafeZoneOverlay::s_customEnabled = false;
+int SafeZoneOverlay::s_marginTop = 10;
+int SafeZoneOverlay::s_marginBottom = 10;
+int SafeZoneOverlay::s_marginLeft = 10;
+int SafeZoneOverlay::s_marginRight = 10;
 
 // ---------------------------------------------------------------------------
 // enable / disable / isEnabled
@@ -194,8 +281,7 @@ bool SafeZoneOverlay::enable()
 	}
 
 	obs_display_add_draw_callback(overlay->m_previewDisplay,
-				      SafeZoneOverlay::drawCallback,
-				      overlay);
+				      SafeZoneOverlay::drawCallback, overlay);
 
 	s_instance = overlay;
 	obs_log(LOG_INFO, "SafeZone Overlay enabled");
@@ -207,20 +293,6 @@ void SafeZoneOverlay::disable()
 	if (!s_instance)
 		return;
 
-	// OBS Studio destroys the main preview's obs_display_t very early in
-	// OBSBasic::closeEvent (via ui->preview->DestroyDisplay(), which
-	// sets OBSBasicPreview::display = nullptr and frees the struct),
-	// long BEFORE OBS_FRONTEND_EVENT_EXIT is dispatched and long before
-	// our dock's Qt destructor runs. That makes s_instance->m_previewDisplay
-	// a dangling pointer at teardown time; passing it to
-	// obs_display_remove_draw_callback crashes inside pthreads.
-	//
-	// Re-read the preview's current display pointer through the shim
-	// instead, and only call the remove API if:
-	//   1) the preview QWidget is still alive (QPointer non-null), and
-	//   2) preview->display is still non-null (DestroyDisplay hasn't
-	//      run yet), and
-	//   3) it matches the display we originally registered against.
 	obs_display_t *liveDisplay = nullptr;
 	if (s_instance->m_previewWidget) {
 		auto *preview = reinterpret_cast<OBSBasicPreviewShim *>(
@@ -230,8 +302,7 @@ void SafeZoneOverlay::disable()
 
 	if (liveDisplay && liveDisplay == s_instance->m_previewDisplay) {
 		obs_display_remove_draw_callback(
-			liveDisplay, SafeZoneOverlay::drawCallback,
-			s_instance);
+			liveDisplay, SafeZoneOverlay::drawCallback, s_instance);
 	}
 
 	delete s_instance;
@@ -246,26 +317,22 @@ bool SafeZoneOverlay::isEnabled()
 }
 
 // ---------------------------------------------------------------------------
-// Image file selection
+// Image file (image mode)
 // ---------------------------------------------------------------------------
 
 void SafeZoneOverlay::setImageFile(const std::string &filename)
 {
-	if (s_imageFile == filename)
+	if (s_imageFile == filename && !s_customEnabled)
 		return;
 
 	s_imageFile = filename;
 
-	// If the overlay is live, reload the texture immediately.
-	if (s_instance) {
+	if (s_instance && !s_customEnabled) {
 		s_instance->freeTexture();
 		if (!s_instance->loadTexture()) {
 			obs_log(LOG_WARNING,
-				"SafeZone Overlay: texture reload failed for "
-				"'%s'; overlay disabled",
+				"SafeZone Overlay: texture reload failed for '%s'",
 				filename.c_str());
-			// freeTexture already cleared the pointer; the draw
-			// callback will no-op on the null check.
 		}
 	}
 }
@@ -275,16 +342,10 @@ const std::string &SafeZoneOverlay::imageFile()
 	return s_imageFile;
 }
 
-// ---------------------------------------------------------------------------
-// Enumerate available PNG files in the plugin data/ directory.
-// ---------------------------------------------------------------------------
-
 std::vector<std::string> SafeZoneOverlay::availableImageFiles()
 {
 	std::vector<std::string> result;
 
-	// Resolve the data directory via obs_module_file(""). The returned
-	// path ends with a separator and points to the plugin's data/ folder.
 	char *dataDir = obs_module_file("");
 	if (!dataDir)
 		return result;
@@ -292,7 +353,6 @@ std::vector<std::string> SafeZoneOverlay::availableImageFiles()
 	QDir dir(QString::fromUtf8(dataDir));
 	bfree(dataDir);
 
-	// List every *.png in the data directory (case-insensitive on Windows).
 	const QStringList entries =
 		dir.entryList(QStringList() << "*.png", QDir::Files,
 			      QDir::Name | QDir::IgnoreCase);
@@ -305,18 +365,78 @@ std::vector<std::string> SafeZoneOverlay::availableImageFiles()
 }
 
 // ---------------------------------------------------------------------------
-// Opacity
+// Custom safe-zone mode
 // ---------------------------------------------------------------------------
 
-void SafeZoneOverlay::setOpacity(float opacity)
+static inline int clampMargin(int v)
 {
-	s_opacity = std::max(0.0f, std::min(1.0f, opacity));
+	return std::max(0, std::min(50, v));
 }
 
-float SafeZoneOverlay::opacity()
+// Helper: reload texture when custom-mode parameters change.
+static void reloadIfActive()
 {
-	return s_opacity;
+	if (!SafeZoneOverlay::isEnabled())
+		return;
+	// Access internal instance via the static enable/disable cycle trick:
+	// disable() deletes the instance then we re-enable() — but that is
+	// expensive and touches the display. Instead we call the internal
+	// reload directly. Because freeTexture/loadTexture are private we
+	// expose the reload through setCustomEnabled which already has access.
+	// For margin changes we do the same: call setCustomEnabled to trigger
+	// the reload path. A simpler approach: keep a package-level friend or
+	// add a thin public helper. We use a dedicated private reload path:
+	// the public API calls the lambda below via the existing setCustomEnabled.
+	(void)0; // handled by callers directly
 }
+
+void SafeZoneOverlay::setCustomEnabled(bool enabled)
+{
+	if (s_customEnabled == enabled)
+		return;
+	s_customEnabled = enabled;
+
+	if (s_instance) {
+		s_instance->freeTexture();
+		if (!s_instance->loadTexture()) {
+			obs_log(LOG_WARNING,
+				"SafeZone Overlay: texture reload failed after "
+				"custom mode %s",
+				enabled ? "enable" : "disable");
+		}
+	}
+}
+
+bool SafeZoneOverlay::isCustomEnabled()
+{
+	return s_customEnabled;
+}
+
+void SafeZoneOverlay::setCustomMargins(int top, int bottom, int left,
+				       int right)
+{
+	s_marginTop = clampMargin(top);
+	s_marginBottom = clampMargin(bottom);
+	s_marginLeft = clampMargin(left);
+	s_marginRight = clampMargin(right);
+
+	// Reload texture if custom mode is active.
+	if (s_instance && s_customEnabled) {
+		s_instance->freeTexture();
+		if (!s_instance->loadTexture()) {
+			obs_log(LOG_WARNING,
+				"SafeZone Overlay: texture reload failed after "
+				"margin change");
+		}
+	}
+}
+
+int SafeZoneOverlay::customMarginTop()    { return s_marginTop;    }
+int SafeZoneOverlay::customMarginBottom() { return s_marginBottom; }
+int SafeZoneOverlay::customMarginLeft()   { return s_marginLeft;   }
+int SafeZoneOverlay::customMarginRight()  { return s_marginRight;  }
+
+
 
 // ---------------------------------------------------------------------------
 // Constructor / destructor
@@ -330,13 +450,129 @@ SafeZoneOverlay::~SafeZoneOverlay()
 }
 
 // ---------------------------------------------------------------------------
+// Custom pixel generation
+// ---------------------------------------------------------------------------
+
+uint8_t *SafeZoneOverlay::generateCustomPixels(uint32_t w, uint32_t h,
+					       int top, int bottom, int left,
+					       int right)
+{
+	const size_t bufSize = size_t(w) * h * 4;
+	auto *pixels = static_cast<uint8_t *>(bzalloc(bufSize));
+	if (!pixels)
+		return nullptr;
+
+	// Pixel coordinates of the safe-zone rectangle.
+	const uint32_t x0 = uint32_t(w * left / 100);
+	const uint32_t y0 = uint32_t(h * top / 100);
+	const uint32_t x1 = w - uint32_t(w * right / 100) - 1;
+	const uint32_t y1 = h - uint32_t(h * bottom / 100) - 1;
+
+	if (x0 >= x1 || y0 >= y1) {
+		// Degenerate rectangle — return empty (all-transparent) buffer.
+		return pixels;
+	}
+
+	// Shade the area outside the safe zone with semi-transparent black.
+	const uint8_t bgR = 0, bgG = 0, bgB = 0, bgA = 0x80; // 50% opacity
+
+	// Top region
+	if (y0 > 0)
+		fillRect(pixels, w, h, 0, 0, w - 1, y0 - 1, bgR, bgG, bgB, bgA);
+	// Bottom region
+	if (y1 + 1 < h)
+		fillRect(pixels, w, h, 0, y1 + 1, w - 1, h - 1, bgR, bgG, bgB, bgA);
+	// Left region (between top and bottom)
+	if (x0 > 0)
+		fillRect(pixels, w, h, 0, y0, x0 - 1, y1, bgR, bgG, bgB, bgA);
+	// Right region (between top and bottom)
+	if (x1 + 1 < w)
+		fillRect(pixels, w, h, x1 + 1, y0, w - 1, y1, bgR, bgG, bgB, bgA);
+
+	const uint32_t lw = std::max(4u, w / 240); // ~8px at 1920w
+
+	// Outline colour: white, mostly opaque
+	const uint8_t R = 0xFF, G = 0xFF, B = 0xFF, A = 0xDC;
+
+	// Top and bottom horizontal lines
+	drawHLine(pixels, w, h, y0, x0, x1, lw, R, G, B, A);
+	if (y1 >= lw)
+		drawHLine(pixels, w, h, y1 - lw + 1, x0, x1, lw, R, G, B, A);
+
+	// Left and right vertical lines (avoid overdrawing corners)
+	drawVLine(pixels, w, h, x0, y0 + lw, y1 - lw, lw, R, G, B, A);
+	if (x1 >= lw)
+		drawVLine(pixels, w, h, x1 - lw + 1, y0 + lw, y1 - lw, lw,
+			  R, G, B, A);
+
+	// Dashed centre crosshair (50% alpha)
+	const uint32_t midX = (x0 + x1) / 2;
+	const uint32_t midY = (y0 + y1) / 2;
+	drawDashedHLine(pixels, w, midY, x0 + lw, x1 - lw, R, G, B, 0x80);
+	drawDashedVLine(pixels, w, h, midX, y0 + lw, y1 - lw, R, G, B, 0x80);
+
+	return pixels;
+}
+
+// ---------------------------------------------------------------------------
 // loadTexture / freeTexture
 // ---------------------------------------------------------------------------
 
 bool SafeZoneOverlay::loadTexture()
 {
-	// Resolve the chosen image file through the OBS module path so it
-	// works regardless of installation location.
+	// -----------------------------------------------------------------
+	// Custom mode: generate texture from margin settings.
+	// -----------------------------------------------------------------
+	if (s_customEnabled) {
+		// Use the actual canvas resolution if available, else 1920x1080.
+		struct obs_video_info ovi = {};
+		obs_get_video_info(&ovi);
+		const uint32_t w =
+			(ovi.base_width > 0) ? ovi.base_width : 1920;
+		const uint32_t h =
+			(ovi.base_height > 0) ? ovi.base_height : 1080;
+
+		uint8_t *pixels = generateCustomPixels(
+			w, h, s_marginTop, s_marginBottom, s_marginLeft,
+			s_marginRight);
+		if (!pixels) {
+			obs_log(LOG_WARNING,
+				"SafeZone Overlay: failed to generate custom "
+				"safe-zone pixels");
+			return false;
+		}
+
+		obs_enter_graphics();
+		gs_texture_t *tex =
+			gs_texture_create(w, h, GS_RGBA, 1,
+					  (const uint8_t **)&pixels, GS_DYNAMIC);
+		obs_leave_graphics();
+
+		bfree(pixels);
+
+		if (!tex) {
+			obs_log(LOG_WARNING,
+				"SafeZone Overlay: gs_texture_create failed "
+				"for custom safe zone");
+			return false;
+		}
+
+		m_texture = tex;
+		m_textureWidth = w;
+		m_textureHeight = h;
+		m_textureIsGenerated = true;
+
+		obs_log(LOG_INFO,
+			"SafeZone Overlay: generated custom safe zone "
+			"(%ux%u, T=%d B=%d L=%d R=%d%%)",
+			w, h, s_marginTop, s_marginBottom, s_marginLeft,
+			s_marginRight);
+		return true;
+	}
+
+	// -----------------------------------------------------------------
+	// Image mode: load from file in data/.
+	// -----------------------------------------------------------------
 	char *resolved = obs_module_file(s_imageFile.c_str());
 	if (!resolved) {
 		obs_log(LOG_WARNING,
@@ -353,7 +589,7 @@ bool SafeZoneOverlay::loadTexture()
 
 	if (!image->image3.image2.image.loaded) {
 		obs_log(LOG_WARNING,
-			"SafeZone Overlay: failed to decode image '%s'",
+			"SafeZone Overlay: failed to decode '%s'",
 			s_imageFile.c_str());
 		gs_image_file4_free(image);
 		bfree(image);
@@ -379,25 +615,30 @@ bool SafeZoneOverlay::loadTexture()
 	m_texture = image->image3.image2.image.texture;
 	m_textureWidth = image->image3.image2.image.cx;
 	m_textureHeight = image->image3.image2.image.cy;
+	m_textureIsGenerated = false;
 
-	obs_log(LOG_INFO,
-		"SafeZone Overlay: loaded '%s' (%ux%u)",
+	obs_log(LOG_INFO, "SafeZone Overlay: loaded '%s' (%ux%u)",
 		s_imageFile.c_str(), m_textureWidth, m_textureHeight);
 	return true;
 }
 
 void SafeZoneOverlay::freeTexture()
 {
-	if (!m_imageFile)
-		return;
-
-	auto *image = static_cast<gs_image_file4_t *>(m_imageFile);
-
-	obs_enter_graphics();
-	gs_image_file4_free(image);
-	obs_leave_graphics();
-
-	bfree(image);
+	if (m_textureIsGenerated) {
+		if (m_texture) {
+			obs_enter_graphics();
+			gs_texture_destroy(m_texture);
+			obs_leave_graphics();
+			m_texture = nullptr;
+		}
+		m_textureIsGenerated = false;
+	} else if (m_imageFile) {
+		auto *image = static_cast<gs_image_file4_t *>(m_imageFile);
+		obs_enter_graphics();
+		gs_image_file4_free(image);
+		obs_leave_graphics();
+		bfree(image);
+	}
 
 	m_imageFile = nullptr;
 	m_texture = nullptr;
@@ -422,14 +663,7 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	if (ovi.base_width == 0 || ovi.base_height == 0)
 		return;
 
-	// Skip drawing when opacity is effectively zero.
-	if (s_opacity < 0.001f)
-		return;
 
-	// Read the live preview state directly from OBSBasicPreview's memory.
-	// This matches the values OBS uses to place the rendered canvas, so
-	// the overlay stays pixel-perfectly aligned with the preview frame
-	// under Ctrl+Scroll zoom and Spacebar pan.
 	auto *preview = reinterpret_cast<OBSBasicPreviewShim *>(
 		self->m_previewWidget.data());
 
@@ -438,22 +672,15 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	const float scrollX = preview->scrollingOffset.x;
 	const float scrollY = preview->scrollingOffset.y;
 
-	// Sanity check - a bogus scalingAmount indicates the layout shim is
-	// out of date with this OBS build; fall back to safe defaults.
-	if (!(scalingAmount > 0.0f && scalingAmount < 1000.0f)) {
+	if (!(scalingAmount > 0.0f && scalingAmount < 1000.0f))
 		scalingAmount = 1.0f;
-	}
 
-	// cx / cy arrive in device pixels, matching GetPixelSize(ui->preview)
-	// in OBS's ResizePreview. The inner "window" area is shrunk by the
-	// preview edge margin on each side.
 	const int windowCX = int(cx) - PREVIEW_EDGE_SIZE * 2;
 	const int windowCY = int(cy) - PREVIEW_EDGE_SIZE * 2;
 	if (windowCX <= 0 || windowCY <= 0)
 		return;
 
-	int previewX = 0;
-	int previewY = 0;
+	int previewX = 0, previewY = 0;
 	float previewScale = 1.0f;
 
 	if (fixedScaling) {
@@ -465,9 +692,8 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 		previewX += int(scrollX);
 		previewY += int(scrollY);
 	} else {
-		GetScaleAndCenterPos(int(ovi.base_width),
-				     int(ovi.base_height), windowCX,
-				     windowCY, previewX, previewY,
+		GetScaleAndCenterPos(int(ovi.base_width), int(ovi.base_height),
+				     windowCX, windowCY, previewX, previewY,
 				     previewScale);
 	}
 
@@ -477,13 +703,8 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	const int previewCX = int(previewScale * float(ovi.base_width));
 	const int previewCY = int(previewScale * float(ovi.base_height));
 
-	// Draw the overlay texture in canvas coordinates inside the same
-	// viewport OBS uses for the scene. Because we use the same math, the
-	// overlay automatically tracks preview resize, canvas resolution,
-	// Ctrl+Scroll zoom, and Spacebar pan.
 	gs_viewport_push();
 	gs_projection_push();
-
 	gs_set_viewport(previewX, previewY, previewCX, previewCY);
 	gs_ortho(0.0f, float(ovi.base_width), 0.0f, float(ovi.base_height),
 		 -100.0f, 100.0f);
@@ -495,14 +716,8 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 
-	// Apply opacity via the effect's "color" multiplier.
 	gs_eparam_t *colorParam =
 		gs_effect_get_param_by_name(effect, "color");
-	if (colorParam && s_opacity < 1.0f) {
-		struct vec4 col;
-		vec4_set(&col, 1.0f, 1.0f, 1.0f, s_opacity);
-		gs_effect_set_vec4(colorParam, &col);
-	}
 
 	gs_eparam_t *imageParam =
 		gs_effect_get_param_by_name(effect, "image");
@@ -513,12 +728,6 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 			       ovi.base_height);
 	}
 
-	// Reset color param back to opaque white so we don't affect other draws.
-	if (colorParam && s_opacity < 1.0f) {
-		struct vec4 col;
-		vec4_set(&col, 1.0f, 1.0f, 1.0f, 1.0f);
-		gs_effect_set_vec4(colorParam, &col);
-	}
 
 	gs_blend_state_pop();
 	gs_projection_pop();

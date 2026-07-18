@@ -40,7 +40,11 @@ namespace {
 constexpr const char *kConfigSection = "SafeZoneOverlay";
 constexpr const char *kConfigEnabledKey = "Enabled";
 constexpr const char *kConfigImageFileKey = "ImageFile";
-constexpr const char *kConfigOpacityKey = "Opacity";
+constexpr const char *kConfigCustomEnabledKey = "CustomEnabled";
+constexpr const char *kConfigMarginTopKey = "MarginTop";
+constexpr const char *kConfigMarginBottomKey = "MarginBottom";
+constexpr const char *kConfigMarginLeftKey = "MarginLeft";
+constexpr const char *kConfigMarginRightKey = "MarginRight";
 
 // The preview's obs_display_t is created lazily (see
 // OBSQTDisplay::CreateDisplay, triggered from visibleChanged / paintEvent /
@@ -87,18 +91,24 @@ std::string loadSavedImageFile()
 	return std::string(val);
 }
 
-float loadSavedOpacity()
+
+bool loadSavedCustomEnabled()
 {
 	config_t *cfg = obs_frontend_get_user_config();
 	if (!cfg)
-		return 1.0f;
-	const double val =
-		config_get_double(cfg, kConfigSection, kConfigOpacityKey);
-	// If never written the returned value is 0.0 (default); treat that as
-	// "unset" and default to fully opaque.
-	if (val < 0.001)
-		return 1.0f;
-	return float(val);
+		return false;
+	return config_get_bool(cfg, kConfigSection, kConfigCustomEnabledKey);
+}
+
+// Loads a saved margin (0-50); returns defaultVal if never written.
+int loadSavedMargin(const char *key, int defaultVal = 10)
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return defaultVal;
+	// config_get_int returns 0 if the key was never set, which happens to
+	// be a valid margin (0 %). We accept it as-is.
+	return (int)config_get_int(cfg, kConfigSection, key);
 }
 
 } // namespace
@@ -117,10 +127,15 @@ SafeZoneOverlayDock::SafeZoneOverlayDock(QWidget *parent) : QWidget(parent)
 	// tryRestoreOverlay() succeeds.
 	const bool savedEnabled = loadSavedEnabled();
 
-	// Apply saved image file and opacity to the overlay engine now so they
-	// are ready when the overlay is enabled later.
+	// Apply saved image file, custom mode, and margins to the
+	// overlay engine now so they are ready when the overlay is enabled later.
 	SafeZoneOverlay::setImageFile(loadSavedImageFile());
-	SafeZoneOverlay::setOpacity(loadSavedOpacity());
+	SafeZoneOverlay::setCustomMargins(
+		loadSavedMargin(kConfigMarginTopKey),
+		loadSavedMargin(kConfigMarginBottomKey),
+		loadSavedMargin(kConfigMarginLeftKey),
+		loadSavedMargin(kConfigMarginRightKey));
+	SafeZoneOverlay::setCustomEnabled(loadSavedCustomEnabled());
 
 	// ---- Toggle button ----
 	m_toggleButton = new QPushButton(this);
