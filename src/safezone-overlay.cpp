@@ -716,8 +716,6 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 
-	gs_eparam_t *colorParam =
-		gs_effect_get_param_by_name(effect, "color");
 
 	gs_eparam_t *imageParam =
 		gs_effect_get_param_by_name(effect, "image");
