@@ -307,15 +307,20 @@ jobs:
           # Install NSIS via Chocolatey (pre-installed on windows-2022 runners)
           choco install nsis --no-progress -y | Out-Null
 
-          $env:PLUGIN_NAME   = $PluginName
+          $PluginDir  = [System.IO.Path]::GetFullPath("${{ github.workspace }}\release\${Config}\${PluginName}")
+          $BinDir     = "$PluginDir\bin\64bit"
+          $DataDir    = "$PluginDir\data"
+
+          $env:PLUGIN_NAME    = $PluginName
           $env:PLUGIN_VERSION = $PluginVersion
-          $env:RELEASE_DIR   = "${ReleaseDir}/bin/64bit"
-          $env:OUTPUT_PATH   = $OutputPath
-          $env:PROJECT_ROOT  = $ProjectRoot
+          $env:RELEASE_DIR    = $BinDir
+          $env:DATA_DIR       = $DataDir
+          $env:OUTPUT_PATH    = [System.IO.Path]::GetFullPath("${{ github.workspace }}\release")
+          $env:PROJECT_ROOT   = [System.IO.Path]::GetFullPath("${{ github.workspace }}")
 
           Write-Host "::group::Compiling NSIS installer"
           & "C:\Program Files (x86)\NSIS\makensis.exe" /V3 `
-              "${{ github.workspace }}/installer/windows-installer.nsi"
+              "${{ github.workspace }}\installer\windows-installer.nsi"
           Write-Host "::endgroup::"
 
       - name: Upload Artifacts 📡
