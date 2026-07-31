@@ -30,9 +30,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QSlider>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QString>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -44,9 +46,13 @@ constexpr const char *kConfigMarginTopKey = "MarginTop";
 constexpr const char *kConfigMarginBottomKey = "MarginBottom";
 constexpr const char *kConfigMarginLeftKey = "MarginLeft";
 constexpr const char *kConfigMarginRightKey = "MarginRight";
+constexpr const char *kConfigConstrainedSourcesKey = "ConstrainedSources";
+constexpr const char *kConfigAutoClampKey = "AutoClampEnabled";
 
 void saveSettings(const std::string &imageFile, bool customEnabled,
-		  int mTop, int mBottom, int mLeft, int mRight)
+		  int mTop, int mBottom, int mLeft, int mRight,
+		  const std::vector<std::string> &constrainedSources,
+		  bool autoClamp)
 {
 	config_t *cfg = obs_frontend_get_user_config();
 	if (!cfg)
@@ -59,6 +65,17 @@ void saveSettings(const std::string &imageFile, bool customEnabled,
 	config_set_int(cfg, kConfigSection, kConfigMarginBottomKey, mBottom);
 	config_set_int(cfg, kConfigSection, kConfigMarginLeftKey, mLeft);
 	config_set_int(cfg, kConfigSection, kConfigMarginRightKey, mRight);
+
+	std::string sourcesJoined;
+	for (size_t i = 0; i < constrainedSources.size(); ++i) {
+		if (i > 0)
+			sourcesJoined += ";";
+		sourcesJoined += constrainedSources[i];
+	}
+	config_set_string(cfg, kConfigSection, kConfigConstrainedSourcesKey,
+			  sourcesJoined.c_str());
+	config_set_bool(cfg, kConfigSection, kConfigAutoClampKey, autoClamp);
+
 	config_save_safe(cfg, "tmp", nullptr);
 }
 
@@ -90,6 +107,41 @@ QSpinBox *makeMarginSpin(QWidget *parent)
 	return sb;
 }
 
+static bool enumSceneItemNameCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *names = static_cast<std::vector<QString> *>(param);
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	if (!name)
+		return true;
+
+	QString qName = QString::fromUtf8(name);
+	for (const auto &existing : *names) {
+		if (existing == qName)
+			return true;
+	}
+	names->push_back(qName);
+	return true;
+}
+
+static std::vector<QString> getAvailableSceneSourceNames()
+{
+	std::vector<QString> names;
+	obs_source_t *sceneSource = obs_frontend_get_current_scene();
+	if (!sceneSource)
+		return names;
+
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	if (scene) {
+		obs_scene_enum_items(scene, enumSceneItemNameCb, &names);
+	}
+	obs_source_release(sceneSource);
+	return names;
+}
+
 } // namespace
 
 SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
@@ -97,7 +149,7 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 {
 	setWindowTitle(QStringLiteral("SafeZone Overlay — Properties"));
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
-	setMinimumWidth(400);
+	setMinimumWidth(440);
 
 	// Snapshot current live values so Cancel can restore them.
 	m_originalImageFile = SafeZoneOverlay::imageFile();
@@ -106,6 +158,8 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	m_originalMarginBottom = SafeZoneOverlay::customMarginBottom();
 	m_originalMarginLeft = SafeZoneOverlay::customMarginLeft();
 	m_originalMarginRight = SafeZoneOverlay::customMarginRight();
+	m_originalConstrainedSources = SafeZoneOverlay::constrainedSources();
+	m_originalAutoClampEnabled = SafeZoneOverlay::isAutoClampEnabled();
 
 	// =========================================================
 	// Image row
@@ -174,6 +228,39 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	marginForm->addRow(QStringLiteral("Left:"),   m_marginLeft);
 	marginForm->addRow(QStringLiteral("Right:"),  m_marginRight);
 
+	// =========================================================
+	// Source Constraint Group Box
+	// =========================================================
+	m_constraintGroup = new QGroupBox(QStringLiteral("Safe Zone Source Constraints"), this);
+	auto *constraintLayout = new QVBoxLayout(m_constraintGroup);
+
+	auto *constraintInfo = new QLabel(
+		QStringLiteral("<small>Select sources below that must stay inside the safe zone:</small>"),
+		m_constraintGroup);
+	constraintInfo->setWordWrap(true);
+
+	m_sourcesRowsLayout = new QVBoxLayout();
+	m_sourcesRowsLayout->setSpacing(4);
+
+	populateInitialSourceRows();
+
+	m_addSourceButton = new QPushButton(QStringLiteral("+ Add Source Constraint"), m_constraintGroup);
+	m_addSourceButton->setToolTip(QStringLiteral("Add another source dropdown to constrain."));
+
+	auto *btnRow = new QHBoxLayout();
+	m_snapButton = new QPushButton(QStringLiteral("Snap Selected Sources Now"), m_constraintGroup);
+	m_snapButton->setToolTip(QStringLiteral("Instantly shift selected sources to remain inside the safe zone."));
+	btnRow->addWidget(m_snapButton);
+
+	m_autoClampCheck = new QCheckBox(QStringLiteral("Automatically clamp selected sources"), m_constraintGroup);
+	m_autoClampCheck->setChecked(m_originalAutoClampEnabled);
+	m_autoClampCheck->setToolTip(QStringLiteral("Keep selected sources strictly inside the safe zone continuously."));
+
+	constraintLayout->addWidget(constraintInfo);
+	constraintLayout->addLayout(m_sourcesRowsLayout);
+	constraintLayout->addWidget(m_addSourceButton);
+	constraintLayout->addLayout(btnRow);
+	constraintLayout->addWidget(m_autoClampCheck);
 
 	// =========================================================
 	// Description
@@ -194,18 +281,28 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 
 	// =========================================================
-	// Main layout
+	// Scrollable Content & Main layout
 	// =========================================================
 	auto *topForm = new QFormLayout();
 	topForm->setLabelAlignment(Qt::AlignRight);
 	topForm->addRow(imageLabel, m_imageCombo);
 	topForm->addRow(m_customCheck, m_customGroup);
 
+	auto *contentWidget = new QWidget(this);
+	auto *contentLayout = new QVBoxLayout(contentWidget);
+	contentLayout->setContentsMargins(4, 4, 4, 4);
+	contentLayout->addLayout(topForm);
+	contentLayout->addWidget(m_constraintGroup);
+	contentLayout->addSpacing(4);
+	contentLayout->addWidget(descLabel);
+
+	auto *scrollArea = new QScrollArea(this);
+	scrollArea->setWidgetResizable(true);
+	scrollArea->setFrameShape(QFrame::NoFrame);
+	scrollArea->setWidget(contentWidget);
 
 	auto *mainLayout = new QVBoxLayout(this);
-	mainLayout->addLayout(topForm);
-	mainLayout->addSpacing(4);
-	mainLayout->addWidget(descLabel);
+	mainLayout->addWidget(scrollArea, 1);
 	mainLayout->addSpacing(8);
 	mainLayout->addWidget(buttonBox);
 
@@ -221,7 +318,6 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	connect(m_customCheck, &QCheckBox::toggled, this,
 		&SafeZonePropertiesDialog::onCustomToggled);
 
-	// Any margin spinbox change → onMarginsChanged
 	connect(m_marginTop,
 		QOverload<int>::of(&QSpinBox::valueChanged), this,
 		&SafeZonePropertiesDialog::onMarginsChanged);
@@ -235,7 +331,12 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 		QOverload<int>::of(&QSpinBox::valueChanged), this,
 		&SafeZonePropertiesDialog::onMarginsChanged);
 
-
+	connect(m_addSourceButton, &QPushButton::clicked, this,
+		&SafeZonePropertiesDialog::onAddSourceRowClicked);
+	connect(m_snapButton, &QPushButton::clicked, this,
+		&SafeZonePropertiesDialog::onSnapSourcesClicked);
+	connect(m_autoClampCheck, &QCheckBox::toggled, this,
+		&SafeZonePropertiesDialog::onAutoClampToggled);
 
 	connect(buttonBox, &QDialogButtonBox::accepted, this,
 		&SafeZonePropertiesDialog::onAccepted);
@@ -244,13 +345,11 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 }
 
 // ---------------------------------------------------------------------------
-// Private helper
+// Private helpers
 // ---------------------------------------------------------------------------
 
 void SafeZonePropertiesDialog::updateCustomGroupEnabled(bool customActive)
 {
-	// When custom is active: margin controls on, image combo off.
-	// When custom is inactive: image combo on, margin controls off.
 	if (m_imageCombo)
 		m_imageCombo->setEnabled(!customActive &&
 					 m_imageCombo->count() > 0 &&
@@ -258,6 +357,96 @@ void SafeZonePropertiesDialog::updateCustomGroupEnabled(bool customActive)
 						 QString());
 	if (m_customGroup)
 		m_customGroup->setEnabled(customActive);
+}
+
+void SafeZonePropertiesDialog::addSourceRow(const QString &selectedName)
+{
+	auto *rowWidget = new QWidget(m_constraintGroup);
+	auto *rowLayout = new QHBoxLayout(rowWidget);
+	rowLayout->setContentsMargins(0, 0, 0, 0);
+	rowLayout->setSpacing(4);
+
+	auto *combo = new QComboBox(rowWidget);
+	combo->addItem(QStringLiteral("(Select a source...)"), QVariant(QString()));
+
+	const auto sceneSources = getAvailableSceneSourceNames();
+	int selectIdx = 0;
+	for (int i = 0; i < static_cast<int>(sceneSources.size()); ++i) {
+		combo->addItem(sceneSources[i], QVariant(sceneSources[i]));
+		if (!selectedName.isEmpty() && sceneSources[i] == selectedName) {
+			selectIdx = i + 1; // +1 because of placeholder
+		}
+	}
+	combo->setCurrentIndex(selectIdx);
+
+	auto *removeBtn = new QToolButton(rowWidget);
+	removeBtn->setText(QStringLiteral("✕"));
+	removeBtn->setFixedSize(26, 26);
+	removeBtn->setToolTip(QStringLiteral("Remove this source constraint"));
+
+	rowLayout->addWidget(combo, 1);
+	rowLayout->addWidget(removeBtn);
+
+	m_sourcesRowsLayout->addWidget(rowWidget);
+
+	SourceRow sr;
+	sr.rowWidget = rowWidget;
+	sr.combo = combo;
+	sr.removeBtn = removeBtn;
+	m_sourceRows.push_back(sr);
+
+	connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		&SafeZonePropertiesDialog::onSourceComboChanged);
+	connect(removeBtn, &QToolButton::clicked, this,
+		&SafeZonePropertiesDialog::onRemoveSourceRowClicked);
+}
+
+void SafeZonePropertiesDialog::removeSourceRow(QWidget *rowWidget)
+{
+	if (!rowWidget)
+		return;
+
+	for (auto it = m_sourceRows.begin(); it != m_sourceRows.end(); ++it) {
+		if (it->rowWidget == rowWidget) {
+			m_sourcesRowsLayout->removeWidget(rowWidget);
+			rowWidget->deleteLater();
+			m_sourceRows.erase(it);
+			break;
+		}
+	}
+}
+
+void SafeZonePropertiesDialog::populateInitialSourceRows()
+{
+	for (const auto &row : m_sourceRows) {
+		if (row.rowWidget) {
+			m_sourcesRowsLayout->removeWidget(row.rowWidget);
+			delete row.rowWidget;
+		}
+	}
+	m_sourceRows.clear();
+
+	if (m_originalConstrainedSources.empty()) {
+		addSourceRow();
+	} else {
+		for (const auto &src : m_originalConstrainedSources) {
+			addSourceRow(QString::fromUtf8(src.c_str()));
+		}
+	}
+}
+
+std::vector<std::string> SafeZonePropertiesDialog::getSelectedSourcesFromList() const
+{
+	std::vector<std::string> res;
+	for (const auto &row : m_sourceRows) {
+		if (!row.combo)
+			continue;
+		const QString text = row.combo->currentText();
+		if (row.combo->currentIndex() > 0 && !text.isEmpty()) {
+			res.push_back(text.toUtf8().constData());
+		}
+	}
+	return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +468,6 @@ void SafeZonePropertiesDialog::onCustomToggled(bool checked)
 	SafeZoneOverlay::setCustomEnabled(checked);
 	updateCustomGroupEnabled(checked);
 
-	// If switching to image mode and a valid image is selected, apply it.
 	if (!checked && m_imageCombo && m_imageCombo->count() > 0) {
 		const QVariant data =
 			m_imageCombo->itemData(m_imageCombo->currentIndex());
@@ -298,26 +486,71 @@ void SafeZonePropertiesDialog::onMarginsChanged()
 		m_marginLeft->value(), m_marginRight->value());
 }
 
+void SafeZonePropertiesDialog::onAddSourceRowClicked()
+{
+	addSourceRow();
+	onSourceComboChanged();
+}
+
+void SafeZonePropertiesDialog::onRemoveSourceRowClicked()
+{
+	auto *btn = qobject_cast<QToolButton *>(sender());
+	if (!btn)
+		return;
+
+	for (const auto &row : m_sourceRows) {
+		if (row.removeBtn == btn) {
+			removeSourceRow(row.rowWidget);
+			break;
+		}
+	}
+
+	onSourceComboChanged();
+}
+
+void SafeZonePropertiesDialog::onSnapSourcesClicked()
+{
+	onSourceComboChanged();
+	SafeZoneOverlay::snapConstrainedSourcesNow();
+}
+
+void SafeZonePropertiesDialog::onSourceComboChanged()
+{
+	SafeZoneOverlay::setConstrainedSources(getSelectedSourcesFromList());
+}
+
+void SafeZonePropertiesDialog::onAutoClampToggled(bool checked)
+{
+	onSourceComboChanged();
+	SafeZoneOverlay::setAutoClampEnabled(checked);
+}
 
 void SafeZonePropertiesDialog::onAccepted()
 {
+	auto selectedSources = getSelectedSourcesFromList();
+	SafeZoneOverlay::setConstrainedSources(selectedSources);
+	SafeZoneOverlay::setAutoClampEnabled(m_autoClampCheck ? m_autoClampCheck->isChecked() : false);
+
 	saveSettings(SafeZoneOverlay::imageFile(),
 		     SafeZoneOverlay::isCustomEnabled(),
 		     SafeZoneOverlay::customMarginTop(),
 		     SafeZoneOverlay::customMarginBottom(),
 		     SafeZoneOverlay::customMarginLeft(),
-		     SafeZoneOverlay::customMarginRight());
+		     SafeZoneOverlay::customMarginRight(),
+		     selectedSources,
+		     SafeZoneOverlay::isAutoClampEnabled());
 	accept();
 }
 
 void SafeZonePropertiesDialog::onRejected()
 {
-	// Restore everything to the state at dialog open.
 	SafeZoneOverlay::setCustomEnabled(m_originalCustomEnabled);
 	SafeZoneOverlay::setCustomMargins(
 		m_originalMarginTop, m_originalMarginBottom,
 		m_originalMarginLeft, m_originalMarginRight);
 	SafeZoneOverlay::setImageFile(m_originalImageFile);
+	SafeZoneOverlay::setConstrainedSources(m_originalConstrainedSources);
+	SafeZoneOverlay::setAutoClampEnabled(m_originalAutoClampEnabled);
 
 	reject();
 }

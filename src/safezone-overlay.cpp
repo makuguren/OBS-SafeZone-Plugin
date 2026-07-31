@@ -233,6 +233,8 @@ int SafeZoneOverlay::s_marginTop = 10;
 int SafeZoneOverlay::s_marginBottom = 10;
 int SafeZoneOverlay::s_marginLeft = 10;
 int SafeZoneOverlay::s_marginRight = 10;
+std::vector<std::string> SafeZoneOverlay::s_constrainedSources;
+bool SafeZoneOverlay::s_autoClampEnabled = false;
 
 // ---------------------------------------------------------------------------
 // enable / disable / isEnabled
@@ -435,6 +437,219 @@ int SafeZoneOverlay::customMarginTop()    { return s_marginTop;    }
 int SafeZoneOverlay::customMarginBottom() { return s_marginBottom; }
 int SafeZoneOverlay::customMarginLeft()   { return s_marginLeft;   }
 int SafeZoneOverlay::customMarginRight()  { return s_marginRight;  }
+
+// ---------------------------------------------------------------------------
+// Source Constraint feature
+// ---------------------------------------------------------------------------
+
+void SafeZoneOverlay::setConstrainedSources(const std::vector<std::string> &sources)
+{
+	s_constrainedSources = sources;
+	if (s_autoClampEnabled)
+		snapConstrainedSourcesNow();
+}
+
+const std::vector<std::string> &SafeZoneOverlay::constrainedSources()
+{
+	return s_constrainedSources;
+}
+
+bool SafeZoneOverlay::isSourceConstrained(const std::string &sourceName)
+{
+	for (const auto &s : s_constrainedSources) {
+		if (s == sourceName)
+			return true;
+	}
+	return false;
+}
+
+void SafeZoneOverlay::setAutoClampEnabled(bool enabled)
+{
+	s_autoClampEnabled = enabled;
+	if (s_autoClampEnabled)
+		snapConstrainedSourcesNow();
+}
+
+bool SafeZoneOverlay::isAutoClampEnabled()
+{
+	return s_autoClampEnabled;
+}
+
+void SafeZoneOverlay::getSafeZoneRect(float &x0, float &y0, float &x1, float &y1)
+{
+	struct obs_video_info ovi = {};
+	obs_get_video_info(&ovi);
+	const float canvasW = (ovi.base_width > 0) ? (float)ovi.base_width : 1920.0f;
+	const float canvasH = (ovi.base_height > 0) ? (float)ovi.base_height : 1080.0f;
+
+	int topPct = 10, bottomPct = 10, leftPct = 10, rightPct = 10;
+	if (s_customEnabled) {
+		topPct = s_marginTop;
+		bottomPct = s_marginBottom;
+		leftPct = s_marginLeft;
+		rightPct = s_marginRight;
+	}
+
+	x0 = canvasW * (float)leftPct / 100.0f;
+	y0 = canvasH * (float)topPct / 100.0f;
+	x1 = canvasW - (canvasW * (float)rightPct / 100.0f);
+	y1 = canvasH - (canvasH * (float)bottomPct / 100.0f);
+}
+
+struct EnumSceneData {
+	const std::vector<std::string> *constrainedSources;
+	float sx0, sy0, sx1, sy1;
+};
+
+static bool getSceneItemCanvasBox(obs_sceneitem_t *item, float &ix0, float &iy0,
+				   float &ix1, float &iy1)
+{
+	if (!item)
+		return false;
+
+	struct vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+
+	struct vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return false;
+
+	float w = (float)obs_source_get_width(source);
+	float h = (float)obs_source_get_height(source);
+
+	enum obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
+	if (boundsType != OBS_BOUNDS_NONE) {
+		struct vec2 bounds;
+		obs_sceneitem_get_bounds(item, &bounds);
+		if (bounds.x > 0.0f)
+			w = bounds.x / (scale.x != 0.0f ? fabsf(scale.x) : 1.0f);
+		if (bounds.y > 0.0f)
+			h = bounds.y / (scale.y != 0.0f ? fabsf(scale.y) : 1.0f);
+	}
+
+	float scaledW = fabsf(w * scale.x);
+	float scaledH = fabsf(h * scale.y);
+
+	uint32_t align = obs_sceneitem_get_alignment(item);
+	float offX = 0.0f;
+	float offY = 0.0f;
+	if (align & OBS_ALIGN_RIGHT)
+		offX = scaledW;
+	else if (!(align & OBS_ALIGN_LEFT))
+		offX = scaledW * 0.5f;
+
+	if (align & OBS_ALIGN_BOTTOM)
+		offY = scaledH;
+	else if (!(align & OBS_ALIGN_TOP))
+		offY = scaledH * 0.5f;
+
+	ix0 = pos.x - offX;
+	iy0 = pos.y - offY;
+	ix1 = ix0 + scaledW;
+	iy1 = iy0 + scaledH;
+
+	return true;
+}
+
+static bool clampSceneItemCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *data = static_cast<EnumSceneData *>(param);
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (!source)
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	if (!name)
+		return true;
+
+	bool found = false;
+	for (const auto &s : *data->constrainedSources) {
+		if (s == name) {
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+		return true;
+
+	float ix0 = 0.0f, iy0 = 0.0f, ix1 = 0.0f, iy1 = 0.0f;
+	if (!getSceneItemCanvasBox(item, ix0, iy0, ix1, iy1))
+		return true;
+
+	float scaledW = ix1 - ix0;
+	float scaledH = iy1 - iy0;
+
+	uint32_t align = obs_sceneitem_get_alignment(item);
+	float offX = 0.0f, offY = 0.0f;
+	if (align & OBS_ALIGN_RIGHT)
+		offX = scaledW;
+	else if (!(align & OBS_ALIGN_LEFT))
+		offX = scaledW * 0.5f;
+
+	if (align & OBS_ALIGN_BOTTOM)
+		offY = scaledH;
+	else if (!(align & OBS_ALIGN_TOP))
+		offY = scaledH * 0.5f;
+
+	float newIx0 = ix0;
+	float newIy0 = iy0;
+	bool changed = false;
+
+	if (newIx0 < data->sx0) {
+		newIx0 = data->sx0;
+		changed = true;
+	}
+	if (newIx0 + scaledW > data->sx1) {
+		newIx0 = data->sx1 - scaledW;
+		if (newIx0 < data->sx0)
+			newIx0 = data->sx0;
+		changed = true;
+	}
+
+	if (newIy0 < data->sy0) {
+		newIy0 = data->sy0;
+		changed = true;
+	}
+	if (newIy0 + scaledH > data->sy1) {
+		newIy0 = data->sy1 - scaledH;
+		if (newIy0 < data->sy0)
+			newIy0 = data->sy0;
+		changed = true;
+	}
+
+	if (changed) {
+		struct vec2 newPos;
+		newPos.x = newIx0 + offX;
+		newPos.y = newIy0 + offY;
+		obs_sceneitem_set_pos(item, &newPos);
+	}
+
+	return true;
+}
+
+void SafeZoneOverlay::snapConstrainedSourcesNow()
+{
+	if (s_constrainedSources.empty())
+		return;
+
+	obs_source_t *sceneSource = obs_frontend_get_current_scene();
+	if (!sceneSource)
+		return;
+
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	if (scene) {
+		EnumSceneData data;
+		data.constrainedSources = &s_constrainedSources;
+		getSafeZoneRect(data.sx0, data.sy0, data.sx1, data.sy1);
+
+		obs_scene_enum_items(scene, clampSceneItemCb, &data);
+	}
+
+	obs_source_release(sceneSource);
+}
 
 
 
@@ -662,6 +877,10 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 		return;
 	if (ovi.base_width == 0 || ovi.base_height == 0)
 		return;
+
+	if (s_autoClampEnabled) {
+		snapConstrainedSourcesNow();
+	}
 
 
 	auto *preview = reinterpret_cast<OBSBasicPreviewShim *>(

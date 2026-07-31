@@ -51,6 +51,9 @@ typedef struct gs_texture gs_texture_t;
  *   - Custom mode : draws a programmatic outline rectangle whose margins
  *                   (top / bottom / left / right, expressed as integer
  *                   percentages 0–50) are set by the user.
+ *
+ * Source Constraint feature:
+ *   - Allows selecting OBS sources to clamp within the active safe zone.
  */
 class SafeZoneOverlay {
 public:
@@ -93,7 +96,21 @@ public:
 	static int customMarginLeft();
 	static int customMarginRight();
 
+	// ---------------------------------------------------------------------------
+	// Source Safe Zone Constraint feature
+	// ---------------------------------------------------------------------------
+	static void setConstrainedSources(const std::vector<std::string> &sources);
+	static const std::vector<std::string> &constrainedSources();
+	static bool isSourceConstrained(const std::string &sourceName);
 
+	static void setAutoClampEnabled(bool enabled);
+	static bool isAutoClampEnabled();
+
+	// Snap all configured sources in the current active scene to the safe zone
+	static void snapConstrainedSourcesNow();
+
+	// Calculates active safe zone rectangle in canvas space [x0, y0, x1, y1]
+	static void getSafeZoneRect(float &x0, float &y0, float &x1, float &y1);
 
 private:
 	SafeZoneOverlay();
@@ -140,4 +157,8 @@ private:
 	static int s_marginBottom; // % of canvas height, [0, 50]
 	static int s_marginLeft;   // % of canvas width,  [0, 50]
 	static int s_marginRight;  // % of canvas width,  [0, 50]
+
+	// Source constraint state
+	static std::vector<std::string> s_constrainedSources;
+	static bool s_autoClampEnabled;
 };

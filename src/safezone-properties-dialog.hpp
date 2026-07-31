@@ -21,12 +21,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialog>
 
 #include <string>
+#include <vector>
 
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
 class QLabel;
+class QPushButton;
 class QSpinBox;
+class QToolButton;
+class QVBoxLayout;
 
 /*
  * Modal settings dialog for the SafeZone Overlay plugin.
@@ -34,6 +38,7 @@ class QSpinBox;
  * Exposes:
  *   - Safe Zone image selector — auto-populated from *.png files in data/
  *   - Custom Safe Zone checkbox + four margin spinboxes (Top/Bottom/Left/Right)
+ *   - Safe Zone Source Constraints — dropdown selects to bind sources within safe zone
  *
  * When the "Custom Safe Zone" checkbox is checked the image dropdown is
  * disabled and the margin controls become active, and vice-versa.
@@ -49,6 +54,11 @@ private slots:
 	void onImageChanged(int index);
 	void onCustomToggled(bool checked);
 	void onMarginsChanged();
+	void onAddSourceRowClicked();
+	void onRemoveSourceRowClicked();
+	void onSnapSourcesClicked();
+	void onSourceComboChanged();
+	void onAutoClampToggled(bool checked);
 	void onAccepted();
 	void onRejected();
 
@@ -64,6 +74,19 @@ private:
 	QSpinBox *m_marginLeft = nullptr;
 	QSpinBox *m_marginRight = nullptr;
 
+	// Source constraint controls
+	QGroupBox *m_constraintGroup = nullptr;
+	QVBoxLayout *m_sourcesRowsLayout = nullptr;
+	QPushButton *m_addSourceButton = nullptr;
+	QPushButton *m_snapButton = nullptr;
+	QCheckBox *m_autoClampCheck = nullptr;
+
+	struct SourceRow {
+		QWidget *rowWidget = nullptr;
+		QComboBox *combo = nullptr;
+		QToolButton *removeBtn = nullptr;
+	};
+	std::vector<SourceRow> m_sourceRows;
 
 	// Snapshots at dialog open so we can restore on Cancel.
 	std::string m_originalImageFile;
@@ -72,6 +95,12 @@ private:
 	int m_originalMarginBottom = 10;
 	int m_originalMarginLeft = 10;
 	int m_originalMarginRight = 10;
+	std::vector<std::string> m_originalConstrainedSources;
+	bool m_originalAutoClampEnabled = false;
 
 	void updateCustomGroupEnabled(bool customActive);
+	void addSourceRow(const QString &selectedName = QString());
+	void removeSourceRow(QWidget *rowWidget);
+	void populateInitialSourceRows();
+	std::vector<std::string> getSelectedSourcesFromList() const;
 };

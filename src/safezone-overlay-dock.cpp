@@ -45,6 +45,8 @@ constexpr const char *kConfigMarginTopKey = "MarginTop";
 constexpr const char *kConfigMarginBottomKey = "MarginBottom";
 constexpr const char *kConfigMarginLeftKey = "MarginLeft";
 constexpr const char *kConfigMarginRightKey = "MarginRight";
+constexpr const char *kConfigConstrainedSourcesKey = "ConstrainedSources";
+constexpr const char *kConfigAutoClampKey = "AutoClampEnabled";
 
 // The preview's obs_display_t is created lazily (see
 // OBSQTDisplay::CreateDisplay, triggered from visibleChanged / paintEvent /
@@ -111,6 +113,41 @@ int loadSavedMargin(const char *key, int defaultVal = 10)
 	return (int)config_get_int(cfg, kConfigSection, key);
 }
 
+std::vector<std::string> loadSavedConstrainedSources()
+{
+	std::vector<std::string> res;
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return res;
+	const char *val = config_get_string(cfg, kConfigSection, kConfigConstrainedSourcesKey);
+	if (!val || val[0] == '\0')
+		return res;
+
+	std::string s(val);
+	size_t start = 0;
+	size_t end = s.find(';');
+	while (end != std::string::npos) {
+		std::string item = s.substr(start, end - start);
+		if (!item.empty())
+			res.push_back(item);
+		start = end + 1;
+		end = s.find(';', start);
+	}
+	std::string lastItem = s.substr(start);
+	if (!lastItem.empty())
+		res.push_back(lastItem);
+
+	return res;
+}
+
+bool loadSavedAutoClampEnabled()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return false;
+	return config_get_bool(cfg, kConfigSection, kConfigAutoClampKey);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -136,6 +173,8 @@ SafeZoneOverlayDock::SafeZoneOverlayDock(QWidget *parent) : QWidget(parent)
 		loadSavedMargin(kConfigMarginLeftKey),
 		loadSavedMargin(kConfigMarginRightKey));
 	SafeZoneOverlay::setCustomEnabled(loadSavedCustomEnabled());
+	SafeZoneOverlay::setConstrainedSources(loadSavedConstrainedSources());
+	SafeZoneOverlay::setAutoClampEnabled(loadSavedAutoClampEnabled());
 
 	// ---- Toggle button ----
 	m_toggleButton = new QPushButton(this);
