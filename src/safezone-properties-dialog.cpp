@@ -476,6 +476,9 @@ void SafeZonePropertiesDialog::onImageChanged(int index)
 	if (!data.isValid() || data.toString().isEmpty())
 		return;
 	SafeZoneOverlay::setImageFile(data.toString().toStdString());
+	if (m_customCheck && m_customCheck->isChecked()) {
+		m_customCheck->setChecked(false);
+	}
 }
 
 void SafeZonePropertiesDialog::onCustomToggled(bool checked)

@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.h>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <util/config-file.h>
 #include <graphics/graphics.h>
 #include <graphics/image-file.h>
 #include <graphics/matrix4.h>
@@ -329,6 +330,13 @@ void SafeZoneOverlay::setImageFile(const std::string &filename)
 
 	s_imageFile = filename;
 
+	config_t *cfg = obs_frontend_get_user_config();
+	if (cfg) {
+		config_set_string(cfg, "SafeZoneOverlay", "ImageFile",
+				  filename.c_str());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+
 	if (s_instance && !s_customEnabled) {
 		s_instance->freeTexture();
 		if (!s_instance->loadTexture()) {
@@ -397,6 +405,13 @@ void SafeZoneOverlay::setCustomEnabled(bool enabled)
 	if (s_customEnabled == enabled)
 		return;
 	s_customEnabled = enabled;
+
+	config_t *cfg = obs_frontend_get_user_config();
+	if (cfg) {
+		config_set_bool(cfg, "SafeZoneOverlay", "CustomEnabled",
+				enabled);
+		config_save_safe(cfg, "tmp", nullptr);
+	}
 
 	if (s_instance) {
 		s_instance->freeTexture();
