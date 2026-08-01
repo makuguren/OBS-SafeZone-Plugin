@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -103,7 +104,7 @@ QSpinBox *makeMarginSpin(QWidget *parent)
 	auto *sb = new QSpinBox(parent);
 	sb->setRange(0, 50);
 	sb->setSuffix(QStringLiteral(" %"));
-	sb->setFixedWidth(72);
+	sb->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	return sb;
 }
 
@@ -167,6 +168,7 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	auto *imageLabel = new QLabel(QStringLiteral("Safe Zone Image:"), this);
 
 	m_imageCombo = new QComboBox(this);
+	m_imageCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	m_imageCombo->setToolTip(
 		QStringLiteral("Select a safe-zone guide image from the plugin's data folder.\n"
 			       "Drop any PNG into data/ and it will appear here."));
@@ -190,20 +192,15 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	}
 
 	// =========================================================
-	// Custom safe-zone checkbox
+	// Custom safe-zone group box
 	// =========================================================
-	m_customCheck = new QCheckBox(
-		QStringLiteral("Custom Safe Zone"), this);
+	m_customGroup = new QGroupBox(QStringLiteral("Custom Safe Zone"), this);
+
+	m_customCheck = new QCheckBox(QStringLiteral("Enable Custom Safe Zone"), m_customGroup);
 	m_customCheck->setChecked(m_originalCustomEnabled);
 	m_customCheck->setToolTip(
 		QStringLiteral("Draw a custom safe-zone rectangle using the\n"
 			       "margins below instead of an image file."));
-
-	// =========================================================
-	// Custom margin group box
-	// =========================================================
-	m_customGroup = new QGroupBox(this);
-	m_customGroup->setFlat(true);
 
 	m_marginTop = makeMarginSpin(m_customGroup);
 	m_marginTop->setValue(m_originalMarginTop);
@@ -221,12 +218,21 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	m_marginRight->setValue(m_originalMarginRight);
 	m_marginRight->setToolTip(QStringLiteral("Right margin (% of canvas width)"));
 
-	auto *marginForm = new QFormLayout(m_customGroup);
+	auto *marginForm = new QFormLayout();
 	marginForm->setLabelAlignment(Qt::AlignRight);
+	marginForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	marginForm->setContentsMargins(0, 0, 0, 0);
+	marginForm->setVerticalSpacing(4);
 	marginForm->addRow(QStringLiteral("Top:"),    m_marginTop);
 	marginForm->addRow(QStringLiteral("Bottom:"), m_marginBottom);
 	marginForm->addRow(QStringLiteral("Left:"),   m_marginLeft);
 	marginForm->addRow(QStringLiteral("Right:"),  m_marginRight);
+
+	auto *customLayout = new QVBoxLayout(m_customGroup);
+	customLayout->setContentsMargins(8, 8, 8, 8);
+	customLayout->setSpacing(6);
+	customLayout->addWidget(m_customCheck);
+	customLayout->addLayout(marginForm);
 
 	// =========================================================
 	// Source Constraint Group Box
@@ -256,11 +262,11 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	m_autoClampCheck->setChecked(m_originalAutoClampEnabled);
 	m_autoClampCheck->setToolTip(QStringLiteral("Keep selected sources strictly inside the safe zone continuously."));
 
+	constraintLayout->addWidget(m_autoClampCheck);
 	constraintLayout->addWidget(constraintInfo);
 	constraintLayout->addLayout(m_sourcesRowsLayout);
 	constraintLayout->addWidget(m_addSourceButton);
 	constraintLayout->addLayout(btnRow);
-	constraintLayout->addWidget(m_autoClampCheck);
 
 	// =========================================================
 	// Description
@@ -283,27 +289,33 @@ SafeZonePropertiesDialog::SafeZonePropertiesDialog(QWidget *parent)
 	// =========================================================
 	// Scrollable Content & Main layout
 	// =========================================================
-	auto *topForm = new QFormLayout();
-	topForm->setLabelAlignment(Qt::AlignRight);
-	topForm->addRow(imageLabel, m_imageCombo);
-	topForm->addRow(m_customCheck, m_customGroup);
+	auto *imageForm = new QFormLayout();
+	imageForm->setLabelAlignment(Qt::AlignRight);
+	imageForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	imageForm->setContentsMargins(0, 0, 0, 0);
+	imageForm->setVerticalSpacing(6);
+	imageForm->addRow(imageLabel, m_imageCombo);
 
 	auto *contentWidget = new QWidget(this);
 	auto *contentLayout = new QVBoxLayout(contentWidget);
-	contentLayout->setContentsMargins(4, 4, 4, 4);
-	contentLayout->addLayout(topForm);
+	contentLayout->setContentsMargins(0, 0, 0, 0);
+	contentLayout->setSpacing(8);
+	contentLayout->addLayout(imageForm);
+	contentLayout->addWidget(m_customGroup);
 	contentLayout->addWidget(m_constraintGroup);
-	contentLayout->addSpacing(4);
 	contentLayout->addWidget(descLabel);
+	contentLayout->addStretch(1);
 
 	auto *scrollArea = new QScrollArea(this);
 	scrollArea->setWidgetResizable(true);
 	scrollArea->setFrameShape(QFrame::NoFrame);
+	scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	scrollArea->setWidget(contentWidget);
 
 	auto *mainLayout = new QVBoxLayout(this);
+	mainLayout->setContentsMargins(8, 8, 8, 8);
+	mainLayout->setSpacing(8);
 	mainLayout->addWidget(scrollArea, 1);
-	mainLayout->addSpacing(8);
 	mainLayout->addWidget(buttonBox);
 
 	// Apply initial enabled state.
@@ -355,8 +367,11 @@ void SafeZonePropertiesDialog::updateCustomGroupEnabled(bool customActive)
 					 m_imageCombo->count() > 0 &&
 					 m_imageCombo->itemData(0).toString() !=
 						 QString());
-	if (m_customGroup)
-		m_customGroup->setEnabled(customActive);
+
+	if (m_marginTop)    m_marginTop->setEnabled(customActive);
+	if (m_marginBottom) m_marginBottom->setEnabled(customActive);
+	if (m_marginLeft)   m_marginLeft->setEnabled(customActive);
+	if (m_marginRight)  m_marginRight->setEnabled(customActive);
 }
 
 void SafeZonePropertiesDialog::addSourceRow(const QString &selectedName)

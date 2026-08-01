@@ -632,7 +632,7 @@ static bool clampSceneItemCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 
 void SafeZoneOverlay::snapConstrainedSourcesNow()
 {
-	if (s_constrainedSources.empty())
+	if (!s_customEnabled || s_constrainedSources.empty())
 		return;
 
 	obs_source_t *sceneSource = obs_frontend_get_current_scene();
@@ -878,7 +878,7 @@ void SafeZoneOverlay::drawCallback(void *data, uint32_t cx, uint32_t cy)
 	if (ovi.base_width == 0 || ovi.base_height == 0)
 		return;
 
-	if (s_autoClampEnabled) {
+	if (s_autoClampEnabled && s_customEnabled) {
 		snapConstrainedSourcesNow();
 	}
 
